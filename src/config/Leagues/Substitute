@@ -1,0 +1,165 @@
+import {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ChannelType,
+} from 'discord.js';
+import { getColor } from '../../config/botConfig.js';
+import { logger } from '../../utils/logger.js';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const LEAGUES_CHANNEL_NAME = 'leagues';
+const LEAGUE_HOST_ROLE_NAME = 'League Host';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Returns true when the channel is a public thread that lives inside #leagues.
+ */
+function isLeagueThread(channel) {
+  if (!channel || channel.type !== ChannelType.PublicThread) return false;
+  const parent = channel.parent;
+  return parent && parent.name.toLowerCase() === LEAGUES_CHANNEL_NAME;
+}
+
+/**
+ * Returns true when the member has the League Host role.
+ */
+function hasLeagueHostRole(member) {
+  return member.roles.cache.some(
+    (r) => r.name.toLowerCase() === LEAGUE_HOST_ROLE_NAME.toLowerCase(),
+  );
+}
+
+// ─── Command definition ───────────────────────────────────────────────────────
+export const data = new SlashCommandBuilder()
+  .setName('substitute')
+  .setDescription('Replace a player in the league (League Host only).')
+  .addUserOption((opt) =>
+    opt
+      .setName('player_out')
+      .setDescription('The player being removed')
+      .setRequired(true),
+  )
+  .addUserOption((opt) =>
+    opt
+      .setName('player_in')
+      .setDescription('The player coming in')
+      .setRequired(true),
+  )
+  .addStringOption((opt) =>
+    opt
+      .setName('reason')
+      .setDescription('Optional reason for the substitution')
+      .setRequired(false),
+  );
+
+// ─── Execute ──────────────────────────────────────────────────────────────────
+export async function execute(interaction) {
+  const channel = interaction.channel;
+
+  // 1. Must be inside a league thread.
+  if (!isLeagueThread(channel)) {
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('error'))
+          .setTitle('Wrong Location')
+          .setDescription(
+            'This command can only be used inside a league thread in ' +
+              `**#${LEAGUES_CHANNEL_NAME}**.`,
+          )
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+      ephemeral: true,
+    });
+  }
+
+  // 2. Must have the League Host role.
+  if (!hasLeagueHostRole(interaction.member)) {
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('error'))
+          .setTitle('Access Denied')
+          .setDescription(
+            `Only users with the **${LEAGUE_HOST_ROLE_NAME}** role can use this command.`,
+          )
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+      ephemeral: true,
+    });
+  }
+
+  // 3. Collect options.
+  const playerOut = interaction.options.getMember('player_out');
+  const playerIn = interaction.options.getMember('player_in');
+  const reason = interaction.options.getString('reason') ?? 'No reason provided';
+
+  // 4. Sanity checks.
+  if (!playerOut || !playerIn) {
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('warning'))
+          .setTitle('Invalid Players')
+          .setDescription('One or both players could not be found in this server.')
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+      ephemeral: true,
+    });
+  }
+
+  if (playerOut.id === playerIn.id) {
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('warning'))
+          .setTitle('Invalid Substitution')
+          .setDescription('The outgoing and incoming players must be different.')
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+      ephemeral: true,
+    });
+  }
+
+  await interaction.deferReply();
+
+  // 5. Build and post the substitution log embed.
+  const timestamp = `<t:${Math.floor(Date.now() / 1000)}:F>`;
+
+  const logEmbed = new EmbedBuilder()
+    .setColor(getColor('warning'))
+    .setTitle('🔄 Player Substitution')
+    .addFields(
+      { name: '❌ Player Out', value: `${playerOut}`, inline: true },
+      { name: '✅ Player In', value: `${playerIn}`, inline: true },
+      { name: '\u200B', value: '\u200B', inline: true }, // spacer
+      { name: '📋 Reason', value: reason, inline: false },
+      { name: '👑 Authorised by', value: `${interaction.member}`, inline: true },
+      { name: '🕐 Timestamp', value: timestamp, inline: true },
+    )
+    .setTimestamp()
+    .setFooter({ text: 'Titan Bot' });
+
+  await channel.send({ embeds: [logEmbed] });
+
+  // 6. Confirm to the caller.
+  await interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(getColor('success'))
+        .setTitle('✅ Substitution Logged')
+        .setDescription(
+          `${playerOut} has been replaced by ${playerIn}. The change has been recorded in this thread.`,
+        )
+        .setFooter({ text: 'Titan Bot' }),
+    ],
+  });
+
+  logger.info(
+    `[substitute] ${playerOut.user.tag} → ${playerIn.user.tag} ` +
+      `in thread "${channel.name}" by ${interaction.user.tag}. Reason: ${reason}`,
+  );
+}
+
+export default { data, execute };
