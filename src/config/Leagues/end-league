@@ -1,0 +1,139 @@
+import {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ChannelType,
+} from 'discord.js';
+import { getColor } from '../../config/botConfig.js';
+import { logger } from '../../utils/logger.js';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const LEAGUES_CHANNEL_NAME = 'leagues';
+const LEAGUE_HOST_ROLE_NAME = 'League Host';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function isLeagueThread(channel) {
+  if (!channel || channel.type !== ChannelType.PublicThread) return false;
+  const parent = channel.parent;
+  return parent && parent.name.toLowerCase() === LEAGUES_CHANNEL_NAME;
+}
+
+function hasLeagueHostRole(member) {
+  return member.roles.cache.some(
+    (r) => r.name.toLowerCase() === LEAGUE_HOST_ROLE_NAME.toLowerCase(),
+  );
+}
+
+// ─── Command definition ───────────────────────────────────────────────────────
+export const data = new SlashCommandBuilder()
+  .setName('end-league')
+  .setDescription('Mark the league as complete and lock this thread (League Host only).');
+
+// ─── Execute ──────────────────────────────────────────────────────────────────
+export async function execute(interaction) {
+  const channel = interaction.channel;
+
+  // 1. Must be inside a league thread.
+  if (!isLeagueThread(channel)) {
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('error'))
+          .setTitle('Wrong Location')
+          .setDescription(
+            'This command can only be used inside a league thread in ' +
+              `**#${LEAGUES_CHANNEL_NAME}**.`,
+          )
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+      ephemeral: true,
+    });
+  }
+
+  // 2. Must have the League Host role.
+  if (!hasLeagueHostRole(interaction.member)) {
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('error'))
+          .setTitle('Access Denied')
+          .setDescription(
+            `Only users with the **${LEAGUE_HOST_ROLE_NAME}** role can end a league.`,
+          )
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+      ephemeral: true,
+    });
+  }
+
+  // 3. Acknowledge immediately so Discord doesn't time out while we work.
+  await interaction.deferReply();
+
+  try {
+    // 4. Post the "League Completed" announcement in the thread.
+    const completionEmbed = new EmbedBuilder()
+      .setColor(getColor('success'))
+      .setTitle('🏁 League Completed')
+      .setDescription(
+        `This league has been concluded by ${interaction.member}.\n\n` +
+          'Thank you to all participants! The thread will now be locked and archived.',
+      )
+      .addFields(
+        { name: '👑 Host', value: `${interaction.member}`, inline: true },
+        {
+          name: '🕐 Ended at',
+          value: `<t:${Math.floor(Date.now() / 1000)}:F>`,
+          inline: true,
+        },
+      )
+      .setTimestamp()
+      .setFooter({ text: 'Titan Bot' });
+
+    await channel.send({ embeds: [completionEmbed] });
+
+    // 5. Confirm to the host before the thread is locked (they won't see
+    //    messages after it's locked if they're not in it).
+    await interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('success'))
+          .setTitle('✅ League Ended')
+          .setDescription(
+            'The league has been marked as complete. This thread will be locked and archived.',
+          )
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+    });
+
+    // 6. Lock and archive the thread.
+    //    `locked: true` prevents new messages; `archived: true` collapses it.
+    await channel.edit({
+      locked: true,
+      archived: true,
+      reason: `League ended by ${interaction.user.tag}`,
+    });
+
+    logger.info(
+      `[end-league] Thread "${channel.name}" ended by ${interaction.user.tag}`,
+    );
+  } catch (err) {
+    logger.error(`[end-league] Error: ${err.message}`);
+
+    // If the reply was already deferred we must editReply; otherwise reply.
+    const replyMethod = interaction.deferred ? 'editReply' : 'reply';
+    await interaction[replyMethod]({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(getColor('error'))
+          .setTitle('Error')
+          .setDescription(
+            'Something went wrong while ending the league. Please try again.',
+          )
+          .setFooter({ text: 'Titan Bot' }),
+      ],
+      ephemeral: true,
+    });
+  }
+}
+
+export default { data, execute };
